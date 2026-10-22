@@ -1,0 +1,25 @@
+# Mimir app-level defaults.
+# Override via ~/.config/mimir/config.yaml or MIMIR_* env vars.
+#
+# All available variables (required marked with *):
+#
+# * index_dir: ~/obsidian              # read-only: full vault indexed for search
+# * write_dir: ~/obsidian/mimir-kb     # read-write: AI writes only here
+# * port: 65501                         # HTTP port
+#   chroma_dir: <app_dir>/.chroma      # vector index location
+#   model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2  # fastembed, 50+ langs incl. Czech [default]
+#   model: sentence-transformers/paraphrase-multilingual-mpnet-base-v2  # fastembed, higher quality, larger
+#   model: BAAI/bge-small-en-v1.5                                       # fastembed, only english, fastest
+#   idle_timeout_minutes: 0            # 0 = never shut down automatically
+#   sync_interval_minutes: 5           # 0 = disable periodic sync (safety net for NTFS/WSL)
+#   log_level: warning                 # warning | info | debug
+#   log_file: <app_dir>/server.log
+#   max_log_mb: 5                      # rotate log when exceeds N MB (0 = never)
+#   max_log_files: 5                   # number of rotated backups to keep
+#   fastembed_cache_path: ~/.cache/fastembed  # where to store downloaded ONNX model [default]
+#   usage_log_file: <app_dir>/usage.jsonl  # structured JSONL log of MCP tool calls (for usage analysis)
+#   auth_token:                         # Bearer token; empty = no auth (local only)
+#   bind_host: 127.0.0.1                # 127.0.0.1 (local only) | 0.0.0.0 (with proxy/Caddy)
+
+
+

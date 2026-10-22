@@ -1,0 +1,26 @@
+[project]
+name = "mimir"
+dynamic = ["version"]
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0",
+    "fastembed>=0.4",
+    "python-frontmatter>=1.1",
+    "PyYAML>=6.0",
+    "watchdog>=4.0",
+    "uvicorn>=0.30",
+    "sqlite-vec>=0.1.9",
+]
+
+[project.scripts]
+mimir = "mimir.server:main"
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mimir"]

@@ -1,0 +1,20 @@
+# Runtime
+.venv/
+__pycache__/
+*.pyc
+.chroma/
+server.log
+server.log.*
+server.pid
+usage.jsonl
+usage.jsonl.*
+
+# Local config (use config.yaml.template as starting point)
+config.yaml
+
+# Local development files (not for distribution)
+scripts/
+.claude/
+CLAUDE.md
+TASK.md
+PROGRESS.md
