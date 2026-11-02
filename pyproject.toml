@@ -24,3 +24,8 @@ source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mimir"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]

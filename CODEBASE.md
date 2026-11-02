@@ -11,6 +11,7 @@ mimir-mcp/                           ← git repo root (APP_DIR)
   uv.lock
   README.md                          ← user documentation: install, config, tools
   CODEBASE.md                        ← this file
+  tests/                             ← pytest: devlog format + tools on a temp vault
   src/
     mimir_config.sh                  ← shared bash library: 3-layer config resolution
     mimir/                           ← Python package
@@ -19,6 +20,7 @@ mimir-mcp/                           ← git repo root (APP_DIR)
       store.py                       ← sqlite-vec + FTS5 BM25, hybrid RRF, category weights
       indexer.py                     ← file sync, frontmatter parsing, chunking, NotesWatcher
       tools.py                       ← all @mcp.tool() definitions
+      devlog.py                      ← dev history format: parse/render TASK, PROGRESS, DECISIONS
       server.py                      ← FastMCP, uvicorn, /health, Bearer auth middleware
       version_check.py               ← daemon: compares local git tag with remote on startup
   .chroma/                           ← vector index data dir (default, gitignored)
@@ -60,6 +62,7 @@ upgrade.sh            # mimir.sh --stop → git pull --ff-only → uv self updat
 | `src/mimir/store.py` | sqlite-vec+FTS5+sqlite3 vector store; dense cosine search (vec0 virtual table), BM25 keyword search (FTS5 `entries_fts`), hybrid RRF fusion with optional per-category `search_weight` applied to the fused score. `KNN_MAX` (4096) caps every knn `k`. Thread-safe via `RLock`. Embedding cache (`encode_cached`, `cache_get`/`cache_put`/`cache_prune`) in separate `embed_cache.db` with its own lock — unchanged chunk text is never re-encoded; bump `_CACHE_VERSION` when vectors for the same model change. |
 | `src/mimir/indexer.py` | File scanning, frontmatter parsing, per-section chunking, full/incremental sync, `NotesWatcher` (watchdog). Title derived from H1 heading; category derived from filesystem path relative to `write_dir`. `scan_schema()` reads `usage` + `search_weight` from `.mimir.yaml`; weight is inherited by sub-categories. |
 | `src/mimir/tools.py` | All `@mcp.tool()` definitions; search deduplicates results by file. `_tracked()` decorator + explicit `_log_usage()` calls in `search_notes` write one JSON line per call to the `mimir.usage` logger (duration, args, result summary / hit count / relevance). Note: `_tracked` truncates `result_summary` to 150 chars. Only the local instance is logged — multi-machine setups have no aggregated view. |
+| `src/mimir/devlog.py` | Pure functions (no I/O) for the dev history format in `projects/<slug>/dev/`: slug check, note skeletons, task parse/add/state change, progress rows under date headings, decision add/status. Ignores lines inside code fences; raises `DevlogError` on invalid input or duplicate IDs. |
 | `src/mimir/server.py` | FastMCP + uvicorn wiring, `/health` endpoint, optional Bearer auth middleware, background sync and version-check daemons. |
 | `src/mimir/version_check.py` | Daemon thread: compares local `git describe` with remote tag; logs warning if outdated. |
 
@@ -68,7 +71,7 @@ upgrade.sh            # mimir.sh --stop → git pull --ff-only → uv self updat
 | Tool | Signature |
 |---|---|
 | `search_notes` | `(query="", k=5, tags=None, category=None, mode="hybrid")` — unknown `category` is an error, not an ignored filter |
-| `read_note` | `(path: str)` |
+| `read_note` | `(path: str, offset: int = 0, limit: int \| None = None)` — lines; `offset<0` counts from the end; paginated output starts with `[lines X–Y of N]` |
 | `add_note` | `(path: str, tags: list[str], author: str, content: str)` |
 | `edit_note` | `(path: str, content: str, tags: list[str] \| None)` |
 | `patch_note` | `(path: str, old: str, new: str, replace_all: bool = False)` |
@@ -81,6 +84,9 @@ upgrade.sh            # mimir.sh --stop → git pull --ff-only → uv self updat
 | `list_tags` | `()` |
 | `get_schema` | `()` — category tree from `.mimir.yaml` files, TTL-cached 30 s |
 | `reindex` | `()` — force full re-sync |
+| `dev_task` | `(project, id=None, description=None, ac=None, state=None, reason=None, decision=None)` — no `id` adds `T<n>`; with `id` sets state (`' ' ~ ! x -`) |
+| `dev_log` | `(project, tasks: list[str], summary, implementation)` — row under today's `## YYYY-MM-DD`; tasks must exist |
+| `dev_decision` | `(project, title=None, context=None, decision=None, rejected=None, consequences=None, tasks=None, status="accepted", id=None)` — no `id` adds `D<n>`; with `id` sets status |
 
 ```
 GET /health  →  {"status":"ok"|"indexing","pid":N,"ip_add":str,"port":N,"notes":N,"chunks":N,"idle_seconds":N,"idle_timeout":N}
@@ -116,6 +122,17 @@ GET /health  →  {"status":"ok"|"indexing","pid":N,"ip_add":str,"port":N,"notes
 2. Call `touch_fn()` first (resets the idle-shutdown timer).
 3. For write operations: resolve the path via `_resolve_write(path, cfg.index_dir, cfg.write_dir)`; it returns `None` for anything outside `write_dir`.
 4. Add `@_tracked("<tool_name>", *arg_names)` for usage logging, or call `_log_usage()` explicitly when the return string doesn't capture what matters.
+
+### Change the dev history format
+
+1. Change parse/render functions and regexes in `src/mimir/devlog.py`.
+2. Keep `tools.py` wrappers thin — they only scaffold, lock, load/save frontmatter and call `devlog`.
+3. Update `tests/test_devlog.py`, run `uv run pytest`.
+4. Existing notes in the vault are not migrated automatically.
+
+### Run tests
+
+`uv run pytest` — tool tests use a temp vault and stub `index_file`; never point tests at the production vault.
 
 ### New config variable
 

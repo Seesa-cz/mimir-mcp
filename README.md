@@ -152,7 +152,7 @@ Configuration is resolved in layers (later overrides earlier):
 | Tool | Description |
 |------|-------------|
 | `search_notes(query, k?, tags?, category?, mode?)` | Semantic + keyword search across INDEX_DIR |
-| `read_note(path)` | Full note content including frontmatter |
+| `read_note(path, offset?, limit?)` | Note content including frontmatter; `offset`/`limit` page by lines (`offset<0` = from the end) |
 | `add_note(path, tags, author, content)` | Create a new note in WRITE_DIR |
 | `edit_note(path, content, tags?)` | Replace note body |
 | `patch_note(path, old, new, replace_all?)` | Partial edit via substring replace |
@@ -165,6 +165,26 @@ Configuration is resolved in layers (later overrides earlier):
 | `list_tags()` | All tags sorted by frequency |
 | `get_schema()` | Category tree from `.mimir.yaml` files |
 | `reindex()` | Force full re-sync |
+| `dev_task(project, id?, description?, ac?, state?, reason?, decision?)` | Add a task (returns `T<n>`) or change its state in the project's dev history |
+| `dev_log(project, tasks, summary, implementation)` | Append a progress row under today's date |
+| `dev_decision(project, title?, context?, decision?, rejected?, consequences?, tasks?, status?, id?)` | Record a design decision (returns `D<n>`) or change its status |
+
+### Project dev history
+
+`dev_*` tools keep per-project development history outside the code repository, in
+`WRITE_DIR/projects/<slug>/dev/` (`<slug>` = lowercase project directory name):
+
+| Note | Content | Written by |
+|------|---------|------------|
+| `STATUS.md` | Current state snapshot | `edit_note` (overwrite) |
+| `TASK.md` | `- [STATE] T<n> Description`, states `[ ]` todo, `[~]` in progress, `[!]` blocked, `[x]` done, `[-]` cancelled | `dev_task` |
+| `PROGRESS.md` | `## YYYY-MM-DD` + table `Task / Summary / Implementation` | `dev_log` |
+| `DECISIONS.md` | `## D<n> — date — title  [accepted\|rejected\|superseded by D<n>]` + Context / Decision / Rejected / Consequences / Tasks | `dev_decision` |
+
+The first `dev_*` call for a project creates the directory, its `.mimir.yaml` (`search_weight: 0.5`)
+and all four notes. IDs are allocated as max + 1; two machines adding a task to the same project at the
+same moment (vault synced by a file-sync service) can produce a duplicate ID — the tools then refuse
+to edit that note until it is fixed by hand.
 
 ## Category system
 

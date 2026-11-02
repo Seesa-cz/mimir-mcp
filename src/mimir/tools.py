@@ -6,6 +6,7 @@ import inspect
 import json
 import logging
 import shutil
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from mcp.types import ToolAnnotations
 from .config import Config
 from .store import VectorStore, KNN_MAX
 from .indexer import index_file, scan_schema, flatten_schema, file_id, is_indexing
+from . import devlog
 
 logger = logging.getLogger(__name__)
 usage_logger = logging.getLogger("mimir.usage")
@@ -290,18 +292,31 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return f"Saved: {p.relative_to(cfg.index_dir)}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-    @_tracked("read_note", "path")
-    def read_note(path: str) -> str:
-        """Return the full content of a note, including frontmatter.
+    @_tracked("read_note", "path", "offset", "limit")
+    def read_note(path: str, offset: int = 0, limit: int | None = None) -> str:
+        """Return the content of a note, including frontmatter (whole note by default).
 
         Args:
             path: Relative path as returned by search_notes, e.g. 'mimir-kb/solutions/foo.md'.
+            offset: First line, 0-based; negative counts from the end (-30 = last 30 lines).
+            limit: Max number of lines to return (default: to the end).
         """
         touch_fn()
         p = _resolve_read(path, cfg.index_dir)
         if p is None:
             return f"Note not found: {path}"
-        return p.read_text()
+        text = p.read_text()
+        if offset == 0 and limit is None:
+            return text
+        if limit is not None and limit <= 0:
+            return "limit must be a positive number of lines"
+        lines = text.splitlines()
+        total = len(lines)
+        start = offset if offset >= 0 else max(total + offset, 0)
+        if start >= total:
+            return f"[offset {offset} is beyond the end — note has {total} lines]"
+        end = total if limit is None else min(start + limit, total)
+        return f"[lines {start + 1}–{end} of {total}]\n" + "\n".join(lines[start:end])
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     @_tracked("edit_note", "path", "tags")
@@ -401,6 +416,147 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         src.unlink()
 
         return f"Moved: {path} → {new_path}"
+
+    # ── Project dev history (projects/<slug>/dev/) ────────────────────────────
+    _dev_lock = threading.Lock()
+
+    def _dev_scaffold(project: str) -> Path:
+        """Create projects/<slug>/dev/ with categories and the four notes if missing."""
+        devlog.check_slug(project)
+        proj_dir = (cfg.write_dir / "projects" / project).resolve()
+        if not proj_dir.is_relative_to(cfg.write_dir):
+            raise devlog.DevlogError(f"Project path '{project}' is outside write_dir")
+        dev_dir = proj_dir / "dev"
+        today = datetime.now().date().isoformat()
+        for d, meta in (
+            (proj_dir, {"usage": f"Project {project}: knowledge notes"}),
+            (dev_dir, {"usage": f"Project {project}: dev history (STATUS, TASK, PROGRESS, DECISIONS) "
+                                "— write via dev_task / dev_log / dev_decision, STATUS via edit_note",
+                       "search_weight": 0.5}),
+        ):
+            if not (d / ".mimir.yaml").exists():
+                d.mkdir(parents=True, exist_ok=True)
+                (d / ".mimir.yaml").write_text(yaml.dump(meta, allow_unicode=True, sort_keys=False))
+                _schema["ts"] = 0.0
+        for kind in devlog.KINDS:
+            p = dev_dir / f"{kind}.md"
+            if not p.exists():
+                post = frontmatter.Post(devlog.skeleton(kind, project, today),
+                                        tags=["dev-history", project], author="mimir", created=today)
+                p.write_text(frontmatter.dumps(post) + "\n")
+                index_file(p, cfg.index_dir, store, cfg.write_dir)
+        return dev_dir
+
+    def _dev_update(project: str, kind: str, fn) -> tuple[str, str]:
+        """Apply fn(body) -> (new_body, result) to a dev note under the lock; returns (result, display path)."""
+        with _dev_lock:
+            p = _dev_scaffold(project) / f"{kind}.md"
+            post = frontmatter.load(str(p))
+            new_body, result = fn(post.content)
+            post.content = new_body
+            p.write_text(frontmatter.dumps(post) + "\n")
+            index_file(p, cfg.index_dir, store, cfg.write_dir)
+            return result, str(p.relative_to(cfg.index_dir))
+
+    def _dev_body(project: str, kind: str) -> str:
+        with _dev_lock:
+            return frontmatter.load(str(_dev_scaffold(project) / f"{kind}.md")).content
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @_tracked("dev_task", "project", "id", "state")
+    def dev_task(
+        project: str,
+        id: str | None = None,
+        description: str | None = None,
+        ac: list[str] | None = None,
+        state: str | None = None,
+        reason: str | None = None,
+        decision: str | None = None,
+    ) -> str:
+        """Add a task or change its state in projects/<project>/dev/TASK.md.
+
+        Without id: adds '- [ ] T<next>' from description (+ ac = acceptance criteria), returns the ID.
+        With id: sets state — ' ' todo, '~' in progress, '!' blocked (needs reason),
+        'x' done, '-' cancelled (needs reason or decision). decision links a D<n>.
+
+        Args:
+            project: Project slug = lowercase project directory name.
+        """
+        touch_fn()
+        try:
+            if id is None:
+                if state is not None:
+                    return "New task always starts as '[ ]' — add it first, then set state with id"
+                result, rel = _dev_update(project, "TASK", lambda t: devlog.add_task(t, description or "", ac))
+                return f"Added {result} to {rel}"
+            def _set(t: str) -> tuple[str, str]:
+                if state is None:
+                    raise devlog.DevlogError("state is required when id is given")
+                return devlog.set_task_state(t, id, state, reason, decision), id
+            result, rel = _dev_update(project, "TASK", _set)
+            return f"{result} set to [{state}] in {rel}"
+        except devlog.DevlogError as e:
+            return f"Error: {e}"
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @_tracked("dev_log", "project", "tasks")
+    def dev_log(project: str, tasks: list[str], summary: str, implementation: str) -> str:
+        """Append a row to projects/<project>/dev/PROGRESS.md under today's date.
+
+        Args:
+            project: Project slug = lowercase project directory name.
+            tasks: Task IDs, e.g. ["T42"]; must exist in TASK.md.
+            summary: One sentence — what was done.
+            implementation: Files + change, commit hash, D<n> link — one line.
+        """
+        touch_fn()
+        try:
+            known = devlog.parse_tasks(_dev_body(project, "TASK"))
+            missing = [t for t in tasks if t not in known]
+            if missing:
+                return f"Error: unknown task(s) {', '.join(missing)} — add them with dev_task first"
+            today = datetime.now().date().isoformat()
+            _, rel = _dev_update(project, "PROGRESS", lambda t: (
+                devlog.append_log(t, today, tasks, summary, implementation), None))
+            return f"Logged {', '.join(tasks)} in {rel}"
+        except devlog.DevlogError as e:
+            return f"Error: {e}"
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @_tracked("dev_decision", "project", "id", "status")
+    def dev_decision(
+        project: str,
+        title: str | None = None,
+        context: str | None = None,
+        decision: str | None = None,
+        rejected: list[str] | None = None,
+        consequences: str | None = None,
+        tasks: list[str] | None = None,
+        status: str = "accepted",
+        id: str | None = None,
+    ) -> str:
+        """Record a design decision in projects/<project>/dev/DECISIONS.md, or change its status.
+
+        Without id: new D<next> (title, context, decision required), returns the ID.
+        rejected = alternatives not chosen, each 'Option — why not'.
+        status 'rejected' = approach tried and abandoned (decision = what was tried, consequences = why it failed).
+        With id: only sets status, e.g. 'superseded by D9'.
+
+        Args:
+            project: Project slug = lowercase project directory name.
+        """
+        touch_fn()
+        try:
+            if id is not None:
+                result, rel = _dev_update(project, "DECISIONS",
+                                          lambda t: (devlog.set_decision_status(t, id, status), id))
+                return f"{result} status set to [{status}] in {rel}"
+            today = datetime.now().date().isoformat()
+            result, rel = _dev_update(project, "DECISIONS", lambda t: devlog.add_decision(
+                t, today, title or "", context or "", decision or "", rejected, consequences, tasks, status))
+            return f"Added {result} to {rel}"
+        except devlog.DevlogError as e:
+            return f"Error: {e}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @_tracked("add_category", "category")
