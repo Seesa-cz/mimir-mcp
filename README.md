@@ -29,6 +29,7 @@ This lets you point Mimir at your entire Obsidian vault while restricting AI wri
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/) — Python package manager (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- `git` — used for installation, `upgrade.sh` and the update check
 - `curl` — used by `mimir.sh` for health checks
 
 Python and all Python dependencies are managed automatically by `uv` — nothing else to install.
@@ -64,6 +65,8 @@ curl http://127.0.0.1:65501/health
 ## Update check
 
 The server compares its running version with the newest `vX.Y.Z` tag on GitHub at start and then every `upgrade_check_interval_minutes`. While a newer version exists, `search_notes` results start with one line telling the agent to inform the user, and `mimir.sh --status`, `--start`, `--restart` and `--reindex` report it. Nothing is upgraded automatically; run `upgrade.sh` yourself. Set `upgrade_check: false` on machines without internet access.
+
+The running version comes from the git tag of the installation, so an installation without git or tags reports `unknown` and never claims an update.
 
 ## Client Configuration (MCP Clients)
 
@@ -103,7 +106,9 @@ systemctl --user daemon-reload
 systemctl --user enable --now mimir.service
 ```
 
-> `TimeoutStartSec=infinity`: `mimir.sh --start` waits up to 30 s for the HTTP server, then — only when the index DB is missing (first start, model change, `--reindex`) — waits for the full reindex to finish, which has no fixed duration. It fails on its own when the server exits, logs an `ERROR`, or writes nothing to the log for 120 s, so a systemd timeout would only kill a reindex that is still progressing.
+> `TimeoutStartSec=infinity`: on first start `mimir.sh --start` downloads the embedding model, which has no fixed duration, so a systemd timeout could kill the download. It then waits up to 30 s for the HTTP server. Under systemd it does not wait for indexing, which continues in the background.
+
+Control a server started by this unit with `systemctl --user stop|restart mimir.service`: `mimir.sh --stop` and `--restart` do not go through systemd, and a server started by `mimir.sh --restart` runs outside the unit.
 
 ## mimir.sh reference
 
@@ -114,9 +119,9 @@ mimir.sh --status     # "running: PID=XXXX" + version / available update, or "no
 mimir.sh --start      # start server (idempotent); fails if the port is taken; reports an available update
 mimir.sh --stop       # stop server
 mimir.sh --restart    # stop + start
-mimir.sh --reindex    # clear index DB and restart (full reindex, embedding cache kept); keeps the index if the port is taken
+mimir.sh --reindex    # clear index DB and restart through mimir.service when enabled (full reindex, embedding cache kept); keeps the index if the port is taken
 mimir.sh --init       # scaffold write_dir with default categories
-mimir.sh --config     # show resolved config with source per variable
+mimir.sh --config     # show resolved config with source per variable; the auth token value is hidden
 
 upgrade.sh            # deploy: stop → git pull → uv self update → uv sync → --reindex (through mimir.service when enabled)
 ```
@@ -149,9 +154,9 @@ Configuration is resolved in layers (later overrides earlier):
 | `upgrade_check` | no | `true` | Compare the running version with GitHub (`false` = off) |
 | `upgrade_check_interval_minutes` | no | `360` | Update check interval (0 = only at server start) |
 | `auth_token` | no | `""` | Bearer token; empty = no auth (local only) |
-| `bind_host` | no | `127.0.0.1` | Listen address; `0.0.0.0` for reverse-proxy setups — requires `auth_token` to be set |
+| `bind_host` | no | `127.0.0.1` | Listen address; `0.0.0.0` for reverse-proxy setups — requires `auth_token` to be set; `/health`, including the version, stays readable without the token |
 
-> **Model note:** `model` must be a [fastembed](https://qdrant.github.io/fastembed/)-compatible ONNX embedding model — not a generative LLM. See `config.yaml.template` for alternatives (e.g. `BAAI/bge-small-en-v1.5` for English-only, faster). After changing the model, delete `chroma_dir` and restart to force a full reindex — embeddings from different models are incompatible.
+> **Model note:** `model` must be a [fastembed](https://qdrant.github.io/fastembed/)-compatible ONNX embedding model — not a generative LLM. See `config.yaml.template` for alternatives (e.g. `BAAI/bge-small-en-v1.5` for English-only, faster). After changing the model, restart the server or run `mimir.sh --reindex`: `mimir.sh` detects the change, clears `chroma_dir` and rebuilds the index, because embeddings from different models are incompatible.
 
 ## MCP Tools
 

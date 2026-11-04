@@ -5,13 +5,13 @@
 ```
 mimir-mcp/                           ← git repo root (APP_DIR)
   mimir.sh                           ← server launcher (start/stop/restart/reindex/init/config)
-  upgrade.sh                         ← deploy: stop → git pull → uv sync → --reindex
+  upgrade.sh                         ← deploy: stop → git pull → uv self update → uv sync → --reindex
   config.yaml.template               ← full variable reference with comments (in git)
   pyproject.toml                     ← project metadata (name: mimir, hatch-vcs versioning)
   uv.lock
   README.md                          ← user documentation: install, config, tools
   CODEBASE.md                        ← this file
-  tests/                             ← pytest: devlog format + tools on a temp vault
+  tests/                             ← pytest: devlog format, tools on a temp vault, version check
   src/
     mimir_config.sh                  ← shared bash library: 3-layer config resolution
     mimir/                           ← Python package
@@ -41,12 +41,12 @@ mimir-mcp/                           ← git repo root (APP_DIR)
 mimir.sh              # help + status (default)
 mimir.sh --help       # usage
 mimir.sh --status     # "running: PID=XXXX" + version / available update, or "not running"
-mimir.sh --start      # start server (idempotent); fails if the port is taken; waits for /health on full reindex; reports an available update
+mimir.sh --start      # start server (idempotent); fails if the port is taken; waits for /health, on full reindex also for the sync (not under systemd); reports an available update
 mimir.sh --stop       # stop server (waits up to 10s for clean exit)
 mimir.sh --restart    # stop + start
-mimir.sh --reindex    # clear vector DB + restart (forces full reindex); keeps the index if the port is taken
+mimir.sh --reindex    # clear vector DB + restart through mimir.service when enabled (forces full reindex); keeps the index if the port is taken
 mimir.sh --init       # scaffold write_dir with default categories (.mimir.yaml files)
-mimir.sh --config     # show resolved config with source per variable
+mimir.sh --config     # show resolved config with source per variable; auth token value hidden
 
 upgrade.sh            # mimir.sh --stop → git pull --ff-only → uv self update → uv sync → mimir.sh --reindex (through mimir.service when enabled)
 ```
@@ -56,14 +56,14 @@ upgrade.sh            # mimir.sh --stop → git pull --ff-only → uv self updat
 | Module | Responsibility |
 |---|---|
 | `src/mimir_config.sh` | 3-layer config resolver (user < app_dir < env); sourced by mimir.sh and upgrade.sh. |
-| `mimir.sh` | Process lifecycle, log rotation, model meta check, model pre-download, category scaffold. |
-| `upgrade.sh` | Deployment script: stops server, pulls git, updates uv, syncs deps, triggers full reindex. |
+| `mimir.sh` | Process lifecycle, occupied-port checks, `mimir.service` detection for `--reindex`, version and update output from `/health`, log rotation, model meta check, model pre-download, category scaffold. |
+| `upgrade.sh` | Deployment script: stops server, pulls git, updates uv, syncs deps, triggers full reindex (through `mimir.service` when enabled). |
 | `src/mimir/config.py` | Maps `MIMIR_*` env vars to typed `Config` dataclass. |
 | `src/mimir/store.py` | sqlite-vec+FTS5+sqlite3 vector store; dense cosine search (vec0 virtual table), BM25 keyword search (FTS5 `entries_fts`), hybrid RRF fusion with optional per-category `search_weight` applied to the fused score. `KNN_MAX` (4096) caps every knn `k`. Thread-safe via `RLock`. Embedding cache (`encode_cached`, `cache_get`/`cache_put`/`cache_prune`) in separate `embed_cache.db` with its own lock — unchanged chunk text is never re-encoded; bump `_CACHE_VERSION` when vectors for the same model change. |
 | `src/mimir/indexer.py` | File scanning, frontmatter parsing, per-section chunking, full/incremental sync, `NotesWatcher` (watchdog). Title derived from H1 heading; category derived from filesystem path relative to `write_dir`. `scan_schema()` reads `usage` + `search_weight` from `.mimir.yaml`; weight is inherited by sub-categories. |
-| `src/mimir/tools.py` | All `@mcp.tool()` definitions; search deduplicates results by file. `_tracked()` decorator + explicit `_log_usage()` calls in `search_notes` write one JSON line per call to the `mimir.usage` logger (duration, args, result summary / hit count / relevance). Note: `_tracked` truncates `result_summary` to 150 chars. Only the local instance is logged — multi-machine setups have no aggregated view. |
+| `src/mimir/tools.py` | All `@mcp.tool()` definitions; search deduplicates results by file and prefixes results with one-line notices (available update, indexing in progress). `_tracked()` decorator + explicit `_log_usage()` calls in `search_notes` write one JSON line per call to the `mimir.usage` logger (duration, args, result summary / hit count / relevance). Note: `_tracked` truncates `result_summary` to 150 chars. Only the local instance is logged — multi-machine setups have no aggregated view. |
 | `src/mimir/devlog.py` | Pure functions (no I/O) for the dev history format in `projects/<slug>/dev/`: slug check, note skeletons, task parse/add/state change, progress rows under date headings, decision add/status. Ignores lines inside code fences; raises `DevlogError` on invalid input or duplicate IDs. |
-| `src/mimir/server.py` | FastMCP + uvicorn wiring, `/health` endpoint, optional Bearer auth middleware, background sync and version-check daemons. |
+| `src/mimir/server.py` | FastMCP + uvicorn wiring, `/health` endpoint, Host header check (loopback mode only), optional Bearer auth middleware (`/health` exempt), background sync and version-check daemons. |
 | `src/mimir/version_check.py` | Reads the running version once at start (`git describe`), compares it with the newest `vX.Y.Z` tag on GitHub over HTTPS at start and every interval; keeps the result in memory for `status()` (`/health`) and `update_notice()` (`search_notes` prefix). A failed check keeps the last known result. |
 
 ## API / Interface
@@ -92,7 +92,7 @@ upgrade.sh            # mimir.sh --stop → git pull --ff-only → uv self updat
 GET /health  →  {"status":"ok"|"indexing","pid":N,"ip_add":str,"port":N,"notes":N,"chunks":N,"idle_seconds":N,"idle_timeout":N,"version":str,"latest_version":str|null,"update_available":bool,"update_check":"disabled"|"pending"|"ok"|"failed"}
 ```
 
-`status` reflects `indexer.is_indexing()` — "indexing" while startup sync, periodic sync, or file-watcher reindex is in flight (counter-based, tracked via `@_tracks_indexing` on `sync()` and `index_file()`). `notes` is the distinct source-file count (`store.count_files()`); `chunks` is the raw indexed-row count (`store.count()`) — long notes are split into several chunks, so `chunks` >= `notes`.
+`status` reflects `indexer.is_indexing()` — "indexing" while startup sync, periodic sync, or file-watcher reindex is in flight (counter-based, tracked via `@_tracks_indexing` on `sync()` and `index_file()`). `notes` is the distinct source-file count (`store.count_files()`); `chunks` is the raw indexed-row count (`store.count()`) — long notes are split into several chunks, so `chunks` >= `notes`. `version` is the tag read at server start or `"unknown"`; `latest_version` is the newest known GitHub tag; `update_available` is true only when both are known and GitHub is newer; `update_check` is the state of the last check, and `"failed"` keeps the last known `latest_version`.
 
 ## Configuration Variables
 
@@ -115,6 +115,7 @@ GET /health  →  {"status":"ok"|"indexing","pid":N,"ip_add":str,"port":N,"notes
 | `MIMIR_UPGRADE_CHECK` | no | `true` | Compare the running version with GitHub (`false` = off). |
 | `MIMIR_UPGRADE_CHECK_INTERVAL` | no | `360` | Update check interval in minutes (0 = only at server start). |
 | `MIMIR_FASTEMBED_CACHE` | no | `~/.cache/fastembed` | ONNX model cache dir; exported as `FASTEMBED_CACHE_PATH` (bash-only, not in config.py). |
+| `MIMIR_PID_FILE` | no | `<app_dir>/server.pid` | PID file; environment variable only, no `config.yaml` key. |
 
 ## How to Add X
 
@@ -122,7 +123,7 @@ GET /health  →  {"status":"ok"|"indexing","pid":N,"ip_add":str,"port":N,"notes
 
 1. Add a `@mcp.tool()` function inside `register_tools()` in `src/mimir/tools.py` — tools are closures over the `cfg`, `store` and `touch_fn` parameters, there is no module-level accessor.
 2. Call `touch_fn()` first (resets the idle-shutdown timer).
-3. For write operations: resolve the path via `_resolve_write(path, cfg.index_dir, cfg.write_dir)`; it returns `None` for anything outside `write_dir`.
+3. For write operations on an existing note: resolve the path via `_resolve_write(path, cfg.index_dir, cfg.write_dir)`; it returns `None` for anything outside `write_dir` and for a missing file. For a new file use `_resolve_within(path, cfg.index_dir, cfg.write_dir)`, which does not check existence.
 4. Add `@_tracked("<tool_name>", *arg_names)` for usage logging, or call `_log_usage()` explicitly when the return string doesn't capture what matters.
 
 ### Change the dev history format
@@ -138,10 +139,11 @@ GET /health  →  {"status":"ok"|"indexing","pid":N,"ip_add":str,"port":N,"notes
 
 ### New config variable
 
-1. Add field to `Config` dataclass in `src/mimir/config.py` with a default.
+1. Add field to `Config` dataclass in `src/mimir/config.py` (no default) and to the `Config(...)` call in `tests/test_tools.py`.
 2. Map `MIMIR_<VAR>` env var in `config.py:load()`.
 3. Add bash parsing in `src/mimir_config.sh`: `_load_yaml` case + env snapshot + derived default.
-4. Document in `config.yaml.template`.
+4. Add it to `cmd_config` in `mimir.sh`; hide the value if it is a secret.
+5. Document in `config.yaml.template`, `README.md` and `CODEBASE.md`.
 
 ### New category
 
