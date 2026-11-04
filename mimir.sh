@@ -13,6 +13,7 @@ mimir_resolve_config
 
 export FASTEMBED_CACHE_PATH="$MIMIR_FASTEMBED_CACHE"
 PID_FILE="$MIMIR_PID_FILE"
+SERVICE_NAME="mimir.service"
 
 # --- PID helpers ---
 _get_pid() {
@@ -154,6 +155,23 @@ _wait_for_sync() {
     done
 }
 
+_port_in_use() {
+    (exec 3<>"/dev/tcp/127.0.0.1/$MIMIR_PORT") 2>/dev/null
+}
+
+_health_pid() {
+    curl -sf "http://127.0.0.1:${MIMIR_PORT}/health" 2>/dev/null \
+        | sed -n 's/.*"pid":[[:space:]]*\([0-9][0-9]*\).*/\1/p'
+}
+
+_require_free_port() {
+    _port_in_use || return 0
+    local holder
+    holder=$(_health_pid) || true
+    echo "ERROR: port $MIMIR_PORT is already in use${holder:+ by mimir server PID=$holder} — not starting" >&2
+    exit 1
+}
+
 cmd_start() {
     mimir_validate
     local pid
@@ -161,6 +179,7 @@ cmd_start() {
         echo "already running: PID=$pid"
         return 0
     fi
+    _require_free_port
     mkdir -p "$(dirname "$MIMIR_LOG_FILE")"
     _rotate_log
     _check_meta
@@ -176,6 +195,7 @@ cmd_start() {
 
     nohup uv --directory "$APP_DIR" run python -m mimir.server \
         >>"$MIMIR_LOG_FILE" 2>&1 &
+    local launcher=$!
     echo "server process launched — log: $MIMIR_LOG_FILE"
 
     # Wait for HTTP server (sync now runs in background → server starts in seconds)
@@ -183,11 +203,19 @@ cmd_start() {
     for i in $(seq 1 30); do
         sleep 1
         if curl -sf "$health" >/dev/null 2>&1; then
-            local real_pid
+            local real_pid health_pid
             real_pid=$(cat "$PID_FILE" 2>/dev/null || echo "?")
+            # The port may have been taken after the check above: /health must be our own server
+            health_pid=$(_health_pid) || true
+            if [[ "$health_pid" != "$real_pid" ]]; then
+                echo "ERROR: port $MIMIR_PORT answered by another process (PID=${health_pid:-unknown}), not this server — check $MIMIR_LOG_FILE" >&2
+                kill "$launcher" 2>/dev/null || true
+                exit 1
+            fi
             echo "started: PID=$real_pid, health status: curl http://127.0.0.1:${MIMIR_PORT}/health"
             curl -sf "$health" 2>/dev/null; echo
-            if [[ "$reindex" -eq 0 ]]; then
+            # Under systemd do not wait for the sync: it can outlast TimeoutStartSec
+            if [[ "$reindex" -eq 0 || -n "${INVOCATION_ID:-}" ]]; then
                 exit 0
             fi
             echo "Syncing in background — monitoring $MIMIR_LOG_FILE ..."
@@ -223,13 +251,46 @@ cmd_restart() {
     cmd_start
 }
 
+_service_enabled() {
+    # True only when the enabled user unit runs this installation with this configuration,
+    # so a dev clone or an env-overridden test instance never stops the production service.
+    systemctl --user is-enabled --quiet "$SERVICE_NAME" 2>/dev/null || return 1
+    local unit
+    unit=$(systemctl --user cat "$SERVICE_NAME" 2>/dev/null) || return 1
+    [[ "$unit" == *"$APP_DIR/mimir.sh --start"* ]] || return 1
+    # The unit sets no MIMIR_* variables: compare with the config resolved without them
+    local print_config='printf "%s\n" "$MIMIR_PORT" "$MIMIR_PID_FILE" "$MIMIR_CHROMA_DIR" "$MIMIR_LOG_FILE" "$MIMIR_INDEX_DIR" "$MIMIR_WRITE_DIR"'
+    local service_config
+    service_config=$(env -i HOME="$HOME" PATH="$PATH" XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-}" APP_DIR="$APP_DIR" \
+        bash -c "source \"\$APP_DIR/src/mimir_config.sh\"; mimir_resolve_config; $print_config") || return 1
+    [[ "$service_config" == "$(eval "$print_config")" ]]
+}
+
 cmd_reindex() {
+    local use_service=0
+    _service_enabled && use_service=1
+    if [[ "$use_service" -eq 1 ]]; then
+        systemctl --user stop "$SERVICE_NAME"
+    fi
     cmd_stop || true
+    # Our server is stopped now: a taken port would block the restart, so keep the index
+    _require_free_port
     echo "Clearing index DB ($MIMIR_CHROMA_DIR)..."
     rm -f "$MIMIR_CHROMA_DIR/metadata.db" \
           "$MIMIR_CHROMA_DIR/metadata.db-wal" \
           "$MIMIR_CHROMA_DIR/metadata.db-shm"
-    cmd_start
+    if [[ "$use_service" -eq 0 ]]; then
+        cmd_start
+        return
+    fi
+    # Rotate before the snapshot so the log offset stays valid after the service starts
+    _rotate_log
+    local log_lines=0
+    [[ -f "$MIMIR_LOG_FILE" ]] && log_lines=$(wc -l < "$MIMIR_LOG_FILE")
+    echo "Starting $SERVICE_NAME..."
+    systemctl --user start "$SERVICE_NAME"
+    echo "Syncing in background — monitoring $MIMIR_LOG_FILE ..."
+    _wait_for_sync "$log_lines"
 }
 
 cmd_init() {

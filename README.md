@@ -107,14 +107,14 @@ systemctl --user enable --now mimir.service
 mimir.sh              # show help + status (default)
 mimir.sh --help       # show usage
 mimir.sh --status     # "running: PID=XXXX" or "not running"
-mimir.sh --start      # start server (idempotent)
+mimir.sh --start      # start server (idempotent); fails if the port is taken
 mimir.sh --stop       # stop server
 mimir.sh --restart    # stop + start
-mimir.sh --reindex    # clear index DB and restart (full reindex, embedding cache kept)
+mimir.sh --reindex    # clear index DB and restart (full reindex, embedding cache kept); keeps the index if the port is taken
 mimir.sh --init       # scaffold write_dir with default categories
 mimir.sh --config     # show resolved config with source per variable
 
-upgrade.sh            # deploy: stop → git pull → uv self update → uv sync → --reindex
+upgrade.sh            # deploy: stop → git pull → uv self update → uv sync → --reindex (through mimir.service when enabled)
 ```
 
 > **Embedding cache:** embeddings are cached in `chroma_dir/embed_cache.db`, keyed by model and a hash of the chunk text. A full reindex re-encodes only chunks whose text is not in the cache, so `--reindex` / `upgrade.sh` take seconds instead of minutes once the cache is warm (the first run after installing, or after a model change, still encodes everything). Edited notes re-encode only their changed sections. Entries unused for 30 days are pruned after each sync. Delete `embed_cache.db` to force re-encoding everything.

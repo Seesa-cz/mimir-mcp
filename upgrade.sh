@@ -25,6 +25,7 @@ uv self update
 echo "==> Syncing dependencies..."
 uv --directory "$APP_DIR" sync
 
-# 4. Restart server with full reindex (clears DB + waits for sync)
+# 4. Restart server with full reindex (clears DB + waits for sync);
+#    --reindex starts it through mimir.service when that unit is enabled for this directory
 echo "==> Reindexing..."
 bash "$APP_DIR/mimir.sh" --reindex

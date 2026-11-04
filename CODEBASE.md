@@ -41,14 +41,14 @@ mimir-mcp/                           ← git repo root (APP_DIR)
 mimir.sh              # help + status (default)
 mimir.sh --help       # usage
 mimir.sh --status     # "running: PID=XXXX" or "not running"
-mimir.sh --start      # start server (idempotent); waits for /health on full reindex
+mimir.sh --start      # start server (idempotent); fails if the port is taken; waits for /health on full reindex
 mimir.sh --stop       # stop server (waits up to 10s for clean exit)
 mimir.sh --restart    # stop + start
-mimir.sh --reindex    # clear vector DB + restart (forces full reindex)
+mimir.sh --reindex    # clear vector DB + restart (forces full reindex); keeps the index if the port is taken
 mimir.sh --init       # scaffold write_dir with default categories (.mimir.yaml files)
 mimir.sh --config     # show resolved config with source per variable
 
-upgrade.sh            # mimir.sh --stop → git pull --ff-only → uv self update → uv sync → mimir.sh --reindex
+upgrade.sh            # mimir.sh --stop → git pull --ff-only → uv self update → uv sync → mimir.sh --reindex (through mimir.service when enabled)
 ```
 
 ## Module Responsibilities
