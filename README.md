@@ -58,8 +58,12 @@ Check the server is running:
 
 ```bash
 curl http://127.0.0.1:65501/health
-# {"status":"ok","pid":12345,"ip_add":"127.0.0.1","port":65501,"notes":42,"chunks":58,"idle_seconds":5,"idle_timeout":0}
+# {"status":"ok","pid":12345,"ip_add":"127.0.0.1","port":65501,"notes":42,"chunks":58,"idle_seconds":5,"idle_timeout":0,"version":"v1.1.2","latest_version":"v1.1.2","update_available":false,"update_check":"ok"}
 ```
+
+## Update check
+
+The server compares its running version with the newest `vX.Y.Z` tag on GitHub at start and then every `upgrade_check_interval_minutes`. While a newer version exists, `search_notes` results start with one line telling the agent to inform the user, and `mimir.sh --status`, `--start`, `--restart` and `--reindex` report it. Nothing is upgraded automatically; run `upgrade.sh` yourself. Set `upgrade_check: false` on machines without internet access.
 
 ## Client Configuration (MCP Clients)
 
@@ -106,8 +110,8 @@ systemctl --user enable --now mimir.service
 ```bash
 mimir.sh              # show help + status (default)
 mimir.sh --help       # show usage
-mimir.sh --status     # "running: PID=XXXX" or "not running"
-mimir.sh --start      # start server (idempotent); fails if the port is taken
+mimir.sh --status     # "running: PID=XXXX" + version / available update, or "not running"
+mimir.sh --start      # start server (idempotent); fails if the port is taken; reports an available update
 mimir.sh --stop       # stop server
 mimir.sh --restart    # stop + start
 mimir.sh --reindex    # clear index DB and restart (full reindex, embedding cache kept); keeps the index if the port is taken
@@ -142,6 +146,8 @@ Configuration is resolved in layers (later overrides earlier):
 | `max_log_files` | no | `5` | Number of rotated backups |
 | `fastembed_cache_path` | no | `~/.cache/fastembed` | ONNX model cache dir (persistent across reinstalls) |
 | `usage_log_file` | no | `<app_dir>/usage.jsonl` | JSONL log of MCP tool calls, for usage analysis |
+| `upgrade_check` | no | `true` | Compare the running version with GitHub (`false` = off) |
+| `upgrade_check_interval_minutes` | no | `360` | Update check interval (0 = only at server start) |
 | `auth_token` | no | `""` | Bearer token; empty = no auth (local only) |
 | `bind_host` | no | `127.0.0.1` | Listen address; `0.0.0.0` for reverse-proxy setups — requires `auth_token` to be set |
 

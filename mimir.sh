@@ -102,6 +102,46 @@ cmd_status() {
     pid=$(_get_pid 2>/dev/null || echo "?")
     echo "running: PID=$pid, health status: curl http://127.0.0.1:${MIMIR_PORT}/health"
     echo "$resp"
+    _print_version "$resp"
+}
+
+_json_string() {
+    sed -n "s/.*\"$1\":[[:space:]]*\"\([^\"]*\)\".*/\1/p" <<< "$2"
+}
+
+_print_version() {
+    # $1 = /health response. Prints nothing for a server too old to report its version.
+    local version check latest
+    version=$(_json_string version "$1")
+    [[ -n "$version" ]] || return 0
+    check=$(_json_string update_check "$1")
+    latest=$(_json_string latest_version "$1")
+    if [[ "$1" == *'"update_available":true'* ]]; then
+        echo "UPDATE AVAILABLE: Mimir $latest (running $version) — run upgrade.sh"
+        return 0
+    fi
+    if [[ "$version" == "unknown" ]]; then
+        echo "version: unknown (latest: ${latest:-unknown})"
+        return 0
+    fi
+    case "$check" in
+        ok)       echo "version: $version (up to date)" ;;
+        failed)   echo "version: $version (update check failed)" ;;
+        pending)  echo "version: $version (update check pending)" ;;
+        disabled) echo "version: $version (update check disabled)" ;;
+    esac
+}
+
+_print_version_after_check() {
+    # The check runs in the background: give it a moment, but never hold up the start.
+    local resp i
+    for i in 1 2 3; do
+        resp=$(curl -sf "http://127.0.0.1:${MIMIR_PORT}/health" 2>/dev/null) || return 0
+        [[ "$(_json_string update_check "$resp")" == "pending" ]] || break
+        sleep 1
+    done
+    # Still unknown after the wait: stay silent, --status reports the result later
+    [[ "$(_json_string update_check "$resp")" == "pending" ]] || _print_version "$resp"
 }
 
 _SYNC_STALL_SECONDS=120   # no new log line for this long = sync considered stuck (progress logs every ~10s)
@@ -177,6 +217,7 @@ cmd_start() {
     local pid
     if pid=$(_get_pid 2>/dev/null); then
         echo "already running: PID=$pid"
+        _print_version "$(curl -sf "http://127.0.0.1:${MIMIR_PORT}/health" 2>/dev/null || true)"
         return 0
     fi
     _require_free_port
@@ -215,9 +256,9 @@ cmd_start() {
             echo "started: PID=$real_pid, health status: curl http://127.0.0.1:${MIMIR_PORT}/health"
             curl -sf "$health" 2>/dev/null; echo
             # Under systemd do not wait for the sync: it can outlast TimeoutStartSec
-            if [[ "$reindex" -eq 0 || -n "${INVOCATION_ID:-}" ]]; then
-                exit 0
-            fi
+            [[ -z "${INVOCATION_ID:-}" ]] || exit 0
+            _print_version_after_check
+            [[ "$reindex" -eq 1 ]] || exit 0
             echo "Syncing in background — monitoring $MIMIR_LOG_FILE ..."
             _wait_for_sync "$log_lines"
             exit $?
@@ -291,6 +332,7 @@ cmd_reindex() {
     systemctl --user start "$SERVICE_NAME"
     echo "Syncing in background — monitoring $MIMIR_LOG_FILE ..."
     _wait_for_sync "$log_lines"
+    _print_version_after_check
 }
 
 cmd_init() {
@@ -351,8 +393,10 @@ cmd_config() {
         "MIMIR_MAX_LOG_MB"   "$MIMIR_MAX_LOG_MB"   "${_SRC[MIMIR_MAX_LOG_MB]:-?}" \
         "MIMIR_MAX_LOG_FILES" "$MIMIR_MAX_LOG_FILES" "${_SRC[MIMIR_MAX_LOG_FILES]:-?}" \
         "MIMIR_USAGE_LOG_FILE" "$MIMIR_USAGE_LOG_FILE" "${_SRC[MIMIR_USAGE_LOG_FILE]:-?}" \
-        "MIMIR_AUTH_TOKEN"   "$MIMIR_AUTH_TOKEN"   "${_SRC[MIMIR_AUTH_TOKEN]:-?}" \
-        "MIMIR_BIND_HOST"    "$MIMIR_BIND_HOST"    "${_SRC[MIMIR_BIND_HOST]:-?}"
+        "MIMIR_AUTH_TOKEN"   "${MIMIR_AUTH_TOKEN:+(set, hidden)}" "${_SRC[MIMIR_AUTH_TOKEN]:-?}" \
+        "MIMIR_BIND_HOST"    "$MIMIR_BIND_HOST"    "${_SRC[MIMIR_BIND_HOST]:-?}" \
+        "MIMIR_UPGRADE_CHECK" "$MIMIR_UPGRADE_CHECK" "${_SRC[MIMIR_UPGRADE_CHECK]:-?}" \
+        "MIMIR_UPGRADE_CHECK_INTERVAL" "$MIMIR_UPGRADE_CHECK_INTERVAL" "${_SRC[MIMIR_UPGRADE_CHECK_INTERVAL]:-?}"
 }
 
 # --- Dispatch ---

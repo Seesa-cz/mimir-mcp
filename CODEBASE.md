@@ -22,7 +22,7 @@ mimir-mcp/                           ← git repo root (APP_DIR)
       tools.py                       ← all @mcp.tool() definitions
       devlog.py                      ← dev history format: parse/render TASK, PROGRESS, DECISIONS
       server.py                      ← FastMCP, uvicorn, /health, Bearer auth middleware
-      version_check.py               ← daemon: compares local git tag with remote on startup
+      version_check.py               ← running version vs newest GitHub tag; periodic daemon, in-memory result
   .chroma/                           ← vector index data dir (default, gitignored)
     metadata.db                      ← SQLite metadata + sqlite-vec `vec0` embeddings + FTS5 keyword index (WAL mode)
     embed_cache.db                   ← embedding cache keyed by (model|version, sha256(embed_text)); survives --reindex, delete to purge
@@ -40,8 +40,8 @@ mimir-mcp/                           ← git repo root (APP_DIR)
 ```bash
 mimir.sh              # help + status (default)
 mimir.sh --help       # usage
-mimir.sh --status     # "running: PID=XXXX" or "not running"
-mimir.sh --start      # start server (idempotent); fails if the port is taken; waits for /health on full reindex
+mimir.sh --status     # "running: PID=XXXX" + version / available update, or "not running"
+mimir.sh --start      # start server (idempotent); fails if the port is taken; waits for /health on full reindex; reports an available update
 mimir.sh --stop       # stop server (waits up to 10s for clean exit)
 mimir.sh --restart    # stop + start
 mimir.sh --reindex    # clear vector DB + restart (forces full reindex); keeps the index if the port is taken
@@ -64,7 +64,7 @@ upgrade.sh            # mimir.sh --stop → git pull --ff-only → uv self updat
 | `src/mimir/tools.py` | All `@mcp.tool()` definitions; search deduplicates results by file. `_tracked()` decorator + explicit `_log_usage()` calls in `search_notes` write one JSON line per call to the `mimir.usage` logger (duration, args, result summary / hit count / relevance). Note: `_tracked` truncates `result_summary` to 150 chars. Only the local instance is logged — multi-machine setups have no aggregated view. |
 | `src/mimir/devlog.py` | Pure functions (no I/O) for the dev history format in `projects/<slug>/dev/`: slug check, note skeletons, task parse/add/state change, progress rows under date headings, decision add/status. Ignores lines inside code fences; raises `DevlogError` on invalid input or duplicate IDs. |
 | `src/mimir/server.py` | FastMCP + uvicorn wiring, `/health` endpoint, optional Bearer auth middleware, background sync and version-check daemons. |
-| `src/mimir/version_check.py` | Daemon thread: compares local `git describe` with remote tag; logs warning if outdated. |
+| `src/mimir/version_check.py` | Reads the running version once at start (`git describe`), compares it with the newest `vX.Y.Z` tag on GitHub over HTTPS at start and every interval; keeps the result in memory for `status()` (`/health`) and `update_notice()` (`search_notes` prefix). A failed check keeps the last known result. |
 
 ## API / Interface
 
@@ -89,7 +89,7 @@ upgrade.sh            # mimir.sh --stop → git pull --ff-only → uv self updat
 | `dev_decision` | `(project, title=None, context=None, decision=None, rejected=None, consequences=None, tasks=None, status="accepted", id=None)` — no `id` adds `D<n>`; with `id` sets status |
 
 ```
-GET /health  →  {"status":"ok"|"indexing","pid":N,"ip_add":str,"port":N,"notes":N,"chunks":N,"idle_seconds":N,"idle_timeout":N}
+GET /health  →  {"status":"ok"|"indexing","pid":N,"ip_add":str,"port":N,"notes":N,"chunks":N,"idle_seconds":N,"idle_timeout":N,"version":str,"latest_version":str|null,"update_available":bool,"update_check":"disabled"|"pending"|"ok"|"failed"}
 ```
 
 `status` reflects `indexer.is_indexing()` — "indexing" while startup sync, periodic sync, or file-watcher reindex is in flight (counter-based, tracked via `@_tracks_indexing` on `sync()` and `index_file()`). `notes` is the distinct source-file count (`store.count_files()`); `chunks` is the raw indexed-row count (`store.count()`) — long notes are split into several chunks, so `chunks` >= `notes`.
@@ -112,6 +112,8 @@ GET /health  →  {"status":"ok"|"indexing","pid":N,"ip_add":str,"port":N,"notes
 | `MIMIR_USAGE_LOG_FILE` | no | `<app_dir>/usage.jsonl` | JSONL log of MCP tool calls (rotated via `MIMIR_MAX_LOG_MB`/`MIMIR_MAX_LOG_FILES`). |
 | `MIMIR_AUTH_TOKEN` | no | `""` | Bearer token; empty = no auth (local only). |
 | `MIMIR_BIND_HOST` | no | `127.0.0.1` | Listen address; `0.0.0.0` for reverse-proxy setups. |
+| `MIMIR_UPGRADE_CHECK` | no | `true` | Compare the running version with GitHub (`false` = off). |
+| `MIMIR_UPGRADE_CHECK_INTERVAL` | no | `360` | Update check interval in minutes (0 = only at server start). |
 | `MIMIR_FASTEMBED_CACHE` | no | `~/.cache/fastembed` | ONNX model cache dir; exported as `FASTEMBED_CACHE_PATH` (bash-only, not in config.py). |
 
 ## How to Add X

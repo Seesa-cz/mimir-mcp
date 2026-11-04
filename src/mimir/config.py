@@ -26,6 +26,8 @@ class Config:
     usage_log_file: Path   # structured JSONL log of MCP tool calls, for usage analysis
     auth_token: str | None  # Bearer token for auth; None = no auth (local only)
     bind_host: str          # "127.0.0.1" (default) or "0.0.0.0" (with proxy/Caddy)
+    upgrade_check: bool     # compare the running version with GitHub
+    upgrade_check_interval: int  # seconds; 0 = only at server start
 
 
 def load() -> Config:
@@ -45,4 +47,6 @@ def load() -> Config:
         usage_log_file=Path(os.environ["MIMIR_USAGE_LOG_FILE"]).expanduser().resolve(),
         auth_token=os.environ.get("MIMIR_AUTH_TOKEN") or None,
         bind_host=os.environ.get("MIMIR_BIND_HOST", "127.0.0.1"),
+        upgrade_check=os.environ.get("MIMIR_UPGRADE_CHECK", "true").strip().lower() != "false",
+        upgrade_check_interval=int(os.environ.get("MIMIR_UPGRADE_CHECK_INTERVAL", "360")) * 60,
     )

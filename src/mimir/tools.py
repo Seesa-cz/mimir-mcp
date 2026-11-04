@@ -18,7 +18,7 @@ from mcp.types import ToolAnnotations
 from .config import Config
 from .store import VectorStore, KNN_MAX
 from .indexer import index_file, scan_schema, flatten_schema, file_id, is_indexing
-from . import devlog
+from . import devlog, version_check
 
 logger = logging.getLogger(__name__)
 usage_logger = logging.getLogger("mimir.usage")
@@ -155,7 +155,7 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         """
         touch_fn()
         t0 = time.monotonic()
-        indexing_notice = (
+        notice = version_check.update_notice() + (
             "[indexing in progress — results may be incomplete]\n\n" if is_indexing() else ""
         )
         total = store.count()
@@ -163,7 +163,7 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
             _log_usage("search_notes", query=query, k=k, tags=tags, category=category,
                        mode=mode, duration_ms=round((time.monotonic() - t0) * 1000, 1),
                        results_n=0, top_relevance=None, reason="empty_kb")
-            return indexing_notice + "Knowledge base is empty. Use add_note() to add the first note."
+            return notice + "Knowledge base is empty. Use add_note() to add the first note."
 
         where = None
         if category:
@@ -232,7 +232,7 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
             _log_usage("search_notes", query=query, k=k, tags=tags, category=category,
                        mode=mode, duration_ms=round((time.monotonic() - t0) * 1000, 1),
                        results_n=0, top_relevance=None)
-            return indexing_notice + f"No notes found matching: {label}{extra}"
+            return notice + f"No notes found matching: {label}{extra}"
 
         top_relevance = None
         if candidates[0][2] is not None:
@@ -257,7 +257,7 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
                 f"{header}\n"
                 f"**Tags:** {meta['tags']}  |  {path_display}\n\n{snippet}"
             )
-        return indexing_notice + "\n\n---\n\n".join(parts)
+        return notice + "\n\n---\n\n".join(parts)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @_tracked("add_note", "path", "tags", "author")

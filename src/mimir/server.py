@@ -18,7 +18,7 @@ from .config import load as load_config
 from .store import VectorStore
 from .indexer import sync, start_watcher, is_indexing
 from .tools import register_tools
-from .version_check import check_for_update
+from . import version_check
 
 
 def main() -> None:
@@ -82,7 +82,7 @@ def main() -> None:
             log.exception("Startup sync failed")
 
     threading.Thread(target=_initial_sync, daemon=True).start()
-    threading.Thread(target=check_for_update, daemon=True).start()
+    version_check.start_update_checks(cfg.upgrade_check, cfg.upgrade_check_interval)
 
     mcp = FastMCP("mimir")
 
@@ -146,6 +146,7 @@ def main() -> None:
             "chunks": store.count(),
             "idle_seconds": idle,
             "idle_timeout": cfg.idle_timeout,
+            **version_check.status(),
         })
 
     # Idle shutdown monitor

@@ -54,6 +54,8 @@ _load_yaml() {
             auth_token)            _set_var MIMIR_AUTH_TOKEN       "$val" "$src" ;;
             bind_host)             _set_var MIMIR_BIND_HOST        "$val" "$src" ;;
             fastembed_cache_path)  _set_var MIMIR_FASTEMBED_CACHE  "$val" "$src" ;;
+            upgrade_check)         _set_var MIMIR_UPGRADE_CHECK    "$val" "$src" ;;
+            upgrade_check_interval_minutes) _set_var MIMIR_UPGRADE_CHECK_INTERVAL "$val" "$src" ;;
         esac
     done < "$file"
 }
@@ -69,7 +71,8 @@ mimir_resolve_config() {
     for _v in MIMIR_PORT MIMIR_INDEX_DIR MIMIR_WRITE_DIR MIMIR_CHROMA_DIR \
               MIMIR_MODEL MIMIR_IDLE_TIMEOUT MIMIR_SYNC_INTERVAL MIMIR_LOG_LEVEL \
               MIMIR_LOG_FILE MIMIR_MAX_LOG_MB MIMIR_MAX_LOG_FILES MIMIR_USAGE_LOG_FILE \
-              MIMIR_AUTH_TOKEN MIMIR_BIND_HOST MIMIR_PID_FILE MIMIR_FASTEMBED_CACHE; do
+              MIMIR_AUTH_TOKEN MIMIR_BIND_HOST MIMIR_PID_FILE MIMIR_FASTEMBED_CACHE \
+              MIMIR_UPGRADE_CHECK MIMIR_UPGRADE_CHECK_INTERVAL; do
         [[ -n "${!_v+x}" ]] && _ENV_BEFORE[$_v]="${!_v}"
     done
 
@@ -95,6 +98,8 @@ mimir_resolve_config() {
     [[ -z "${MIMIR_AUTH_TOKEN:-}"      ]] && _set_var MIMIR_AUTH_TOKEN      ""                        "derived"
     [[ -z "${MIMIR_BIND_HOST:-}"       ]] && _set_var MIMIR_BIND_HOST       "127.0.0.1"               "derived"
     [[ -z "${MIMIR_FASTEMBED_CACHE:-}" ]] && _set_var MIMIR_FASTEMBED_CACHE "$HOME/.cache/fastembed"  "derived"
+    [[ -z "${MIMIR_UPGRADE_CHECK:-}" ]] && _set_var MIMIR_UPGRADE_CHECK  "true"                "derived"
+    [[ -z "${MIMIR_UPGRADE_CHECK_INTERVAL:-}" ]] && _set_var MIMIR_UPGRADE_CHECK_INTERVAL "360" "derived"
     # PID file always in APP_DIR — not configurable via config layers
     [[ -z "${MIMIR_PID_FILE:-}"      ]] && _set_var MIMIR_PID_FILE       "$APP_DIR/server.pid" "derived"
     return 0

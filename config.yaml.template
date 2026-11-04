@@ -20,6 +20,8 @@
 #   usage_log_file: <app_dir>/usage.jsonl  # structured JSONL log of MCP tool calls (for usage analysis)
 #   auth_token:                         # Bearer token; empty = no auth (local only)
 #   bind_host: 127.0.0.1                # 127.0.0.1 (local only) | 0.0.0.0 (with proxy/Caddy)
+#   upgrade_check: true                 # compare the running version with GitHub
+#   upgrade_check_interval_minutes: 360 # 0 = only at server start
 
 
 
