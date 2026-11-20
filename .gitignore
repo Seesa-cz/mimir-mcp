@@ -6,8 +6,8 @@ __pycache__/
 server.log
 server.log.*
 server.pid
-usage.jsonl
-usage.jsonl.*
+usage*.jsonl
+usage*.jsonl.*
 
 # Local config (use config.yaml.template as starting point)
 config.yaml

@@ -20,6 +20,7 @@ mimir-mcp/                           ← git repo root (APP_DIR)
       store.py                       ← sqlite-vec + FTS5 BM25, hybrid RRF, category weights
       indexer.py                     ← file sync, frontmatter parsing, chunking, NotesWatcher
       tools.py                       ← all @mcp.tool() definitions
+      usage.py                       ← usage log: TrackedFastMCP.call_tool record per call, status classification, payload file
       devlog.py                      ← dev history format: parse/render TASK, PROGRESS, DECISIONS
       server.py                      ← FastMCP, uvicorn, /health, Bearer auth middleware
       version_check.py               ← running version vs newest GitHub tag; periodic daemon, in-memory result
@@ -29,7 +30,8 @@ mimir-mcp/                           ← git repo root (APP_DIR)
     mimir.meta.yaml                  ← active model name; managed by mimir.sh
   server.log                         ← server log (default, gitignored)
   server.pid                         ← runtime PID (gitignored)
-  usage.jsonl                        ← per-tool-call usage log, JSONL (default, gitignored)
+  usage.jsonl                        ← per-tool-call usage log, JSONL v2 (default, gitignored)
+  usage.payloads.jsonl               ← full args + responses, only with usage_log_detail=full (gitignored)
 
 ~/.mimir/                            ← production deploy (git clone of same repo)
 ~/.config/mimir/config.yaml          ← user config (index_dir, write_dir, port, …)
@@ -61,9 +63,10 @@ upgrade.sh            # mimir.sh --stop → git pull --ff-only → uv self updat
 | `src/mimir/config.py` | Maps `MIMIR_*` env vars to typed `Config` dataclass. |
 | `src/mimir/store.py` | sqlite-vec+FTS5+sqlite3 vector store; dense cosine search (vec0 virtual table), BM25 keyword search (FTS5 `entries_fts`), hybrid RRF fusion with optional per-category `search_weight` applied to the fused score. `KNN_MAX` (4096) caps every knn `k`. Thread-safe via `RLock`. Embedding cache (`encode_cached`, `cache_get`/`cache_put`/`cache_prune`) in separate `embed_cache.db` with its own lock — unchanged chunk text is never re-encoded; bump `_CACHE_VERSION` when vectors for the same model change. |
 | `src/mimir/indexer.py` | File scanning, frontmatter parsing, per-section chunking, full/incremental sync, `NotesWatcher` (watchdog). Title derived from H1 heading; category derived from filesystem path relative to `write_dir`. `scan_schema()` reads `usage` + `search_weight` from `.mimir.yaml`; weight is inherited by sub-categories. |
-| `src/mimir/tools.py` | All `@mcp.tool()` definitions; search deduplicates results by file and prefixes results with one-line notices (available update, indexing in progress). `_tracked()` decorator + explicit `_log_usage()` calls in `search_notes` write one JSON line per call to the `mimir.usage` logger (duration, args, result summary / hit count / relevance). Note: `_tracked` truncates `result_summary` to 150 chars. Only the local instance is logged — multi-machine setups have no aggregated view. |
+| `src/mimir/tools.py` | All `@mcp.tool()` definitions; search deduplicates results by file and prefixes results with one-line notices (available update, indexing in progress). Tools add call-specific usage fields with `usage.note()` (`search_notes`: `hits` with path/category/relevance/chunk, `results_n`, `top_relevance`, `notices`, `cold`). |
 | `src/mimir/devlog.py` | Pure functions (no I/O) for the dev history format in `projects/<slug>/dev/`: slug check, note skeletons, task parse/add/state change, progress rows under date headings, decision add/status. Ignores lines inside code fences; raises `DevlogError` on invalid input or duplicate IDs. |
-| `src/mimir/server.py` | FastMCP + uvicorn wiring, `/health` endpoint, Host header check (loopback mode only), optional Bearer auth middleware (`/health` exempt), background sync and version-check daemons. |
+| `src/mimir/usage.py` | `TrackedFastMCP.call_tool` writes one v2 record per tool call to the `mimir.usage` logger — also for argument validation errors and unknown tools: `req` (unique), `host`, `server` version, `session` (`mcp-session-id`), `client` (clientInfo), `args` (strings >300 chars truncated, length in `args_len`), `status` (`classify()` maps returned text: ok/empty/not_found/ambiguous/denied/conflict/busy/invalid_args/error, plus unknown_tool), `resp_chars`, `duration_ms`, `result_summary` (150 chars, omitted when `hits` present), fields from `note()`. `setup()` expands `{host}`; `{month}` selects `MonthlyFileHandler` (new file per month, nothing deleted), otherwise `RotatingFileHandler`. `usage_log_detail=full` adds `mimir.usage.payloads` → `<stem>.payloads.jsonl`. |
+| `src/mimir/server.py` | FastMCP (`usage.TrackedFastMCP`) + uvicorn wiring, `/health` endpoint, Host header check (loopback mode only), optional Bearer auth middleware (`/health` exempt), background sync and version-check daemons. |
 | `src/mimir/version_check.py` | Reads the running version once at start (`git describe`), compares it with the newest `vX.Y.Z` tag on GitHub over HTTPS at start and every interval; keeps the result in memory for `status()` (`/health`) and `update_notice()` (`search_notes` prefix). A failed check keeps the last known result. |
 
 ## API / Interface
@@ -109,7 +112,8 @@ GET /health  →  {"status":"ok"|"indexing","pid":N,"ip_add":str,"port":N,"notes
 | `MIMIR_LOG_FILE` | no | `<app_dir>/server.log` | Log file path. |
 | `MIMIR_MAX_LOG_MB` | no | `5` | Rotate log at N MB (0 = never). |
 | `MIMIR_MAX_LOG_FILES` | no | `5` | Rotated backup count. |
-| `MIMIR_USAGE_LOG_FILE` | no | `<app_dir>/usage.jsonl` | JSONL log of MCP tool calls (rotated via `MIMIR_MAX_LOG_MB`/`MIMIR_MAX_LOG_FILES`). |
+| `MIMIR_USAGE_LOG_FILE` | no | `<app_dir>/usage.jsonl` | JSONL log of MCP tool calls; `{host}` = hostname, `{month}` = `YYYY-MM` (monthly files, no rotation); without `{month}` rotated via `MIMIR_MAX_LOG_MB`/`MIMIR_MAX_LOG_FILES`. |
+| `MIMIR_USAGE_LOG_DETAIL` | no | `summary` | `full` = also write full args + responses to `<stem>.payloads.jsonl`. |
 | `MIMIR_AUTH_TOKEN` | no | `""` | Bearer token; empty = no auth (local only). |
 | `MIMIR_BIND_HOST` | no | `127.0.0.1` | Listen address; `0.0.0.0` for reverse-proxy setups. |
 | `MIMIR_UPGRADE_CHECK` | no | `true` | Compare the running version with GitHub (`false` = off). |
@@ -124,7 +128,7 @@ GET /health  →  {"status":"ok"|"indexing","pid":N,"ip_add":str,"port":N,"notes
 1. Add a `@mcp.tool()` function inside `register_tools()` in `src/mimir/tools.py` — tools are closures over the `cfg`, `store` and `touch_fn` parameters, there is no module-level accessor.
 2. Call `touch_fn()` first (resets the idle-shutdown timer).
 3. For write operations on an existing note: resolve the path via `_resolve_write(path, cfg.index_dir, cfg.write_dir)`; it returns `None` for anything outside `write_dir` and for a missing file. For a new file use `_resolve_within(path, cfg.index_dir, cfg.write_dir)`, which does not check existence.
-4. Add `@_tracked("<tool_name>", *arg_names)` for usage logging, or call `_log_usage()` explicitly when the return string doesn't capture what matters.
+4. Usage logging is automatic (`usage.TrackedFastMCP`). Call `usage.note(field=...)` for data the return text doesn't capture; return failures as text with a prefix matched by `usage._STATUS_PATTERNS` (add a pattern + a `tests/test_usage.py` case for a new message).
 
 ### Change the dev history format
 

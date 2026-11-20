@@ -135,6 +135,10 @@ class VectorStore:
     # ------------------------------------------------------------------
 
     @property
+    def model_loaded(self) -> bool:
+        return self._model is not None
+
+    @property
     def model(self):
         if self._model is None:
             import warnings

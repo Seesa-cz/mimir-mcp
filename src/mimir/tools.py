@@ -1,9 +1,6 @@
 """MCP tool definitions for Mimir knowledge base."""
 
 from __future__ import annotations
-import functools
-import inspect
-import json
 import logging
 import shutil
 import threading
@@ -18,52 +15,11 @@ from mcp.types import ToolAnnotations
 from .config import Config
 from .store import VectorStore, KNN_MAX
 from .indexer import index_file, scan_schema, flatten_schema, file_id, is_indexing
-from . import devlog, version_check
+from . import devlog, usage, version_check
 
 logger = logging.getLogger(__name__)
-usage_logger = logging.getLogger("mimir.usage")
 
 _N_FETCH_FLOOR = 200    # min candidates per search — demotion needs alternatives to promote
-
-
-def _log_usage(tool: str, **fields) -> None:
-    """Write one JSONL record for a tool call — see mimir.usage logger setup in server.py."""
-    record = {"ts": datetime.now().isoformat(timespec="seconds"), "tool": tool, **fields}
-    usage_logger.info(json.dumps(record, ensure_ascii=False, default=str))
-
-
-def _tracked(tool_name: str, *arg_names: str):
-    """Decorator: logs duration, selected args, and a result/error summary for a tool call.
-
-    For tools whose usage-relevant output isn't captured by the return string
-    (e.g. search_notes' hit count/relevance), log explicitly inside the function instead.
-    """
-    def deco(fn):
-        sig = inspect.signature(fn)
-
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
-            bound = sig.bind(*args, **kwargs)
-            bound.apply_defaults()
-            t0 = time.monotonic()
-            error = None
-            result: str = ""
-            try:
-                result = fn(*args, **kwargs)
-                return result
-            except Exception as e:
-                error = str(e)
-                raise
-            finally:
-                fields = {name: bound.arguments.get(name) for name in arg_names}
-                fields["duration_ms"] = round((time.monotonic() - t0) * 1000, 1)
-                if error is not None:
-                    fields["error"] = error
-                elif isinstance(result, str):
-                    fields["result_summary"] = result[:150]
-                _log_usage(tool_name, **fields)
-        return wrapper
-    return deco
 
 
 def _collect_weights(schema: dict) -> dict[str, float]:
@@ -154,15 +110,13 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         when nothing better matches — only "hybrid" mode applies these weights.
         """
         touch_fn()
-        t0 = time.monotonic()
-        notice = version_check.update_notice() + (
-            "[indexing in progress — results may be incomplete]\n\n" if is_indexing() else ""
-        )
+        update = version_check.update_notice()
+        indexing = is_indexing()
+        notice = update + ("[indexing in progress — results may be incomplete]\n\n" if indexing else "")
+        usage.note(notices=[n for n, on in (("update", update), ("indexing", indexing)) if on],
+                   hits=[], results_n=0, top_relevance=None)
         total = store.count()
         if total == 0:
-            _log_usage("search_notes", query=query, k=k, tags=tags, category=category,
-                       mode=mode, duration_ms=round((time.monotonic() - t0) * 1000, 1),
-                       results_n=0, top_relevance=None, reason="empty_kb")
             return notice + "Knowledge base is empty. Use add_note() to add the first note."
 
         where = None
@@ -172,9 +126,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
                 # Never fall through to an unfiltered search — that silently returns
                 # the whole corpus while the caller believes the filter applied.
                 known = ", ".join(_flat_schema()) or "(none)"
-                _log_usage("search_notes", query=query, k=k, tags=tags, category=category,
-                           mode=mode, duration_ms=round((time.monotonic() - t0) * 1000, 1),
-                           results_n=0, top_relevance=None, reason="unknown_category")
                 return (
                     f"Unknown category '{category}' — nothing was searched. "
                     f"Known categories: {known}"
@@ -188,6 +139,8 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
                 n_fetch = min(total, KNN_MAX)
             else:
                 n_fetch = max(min(k * 20, total), min(_N_FETCH_FLOOR, total))
+            if mode != "keyword":
+                usage.note(cold=not store.model_loaded)   # first encode loads the model
             if mode == "keyword":
                 candidates = store.bm25_query(query, n_fetch, where)
             elif mode == "dense":
@@ -229,17 +182,18 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
                 extra += f", tags={tags}"
             if category:
                 extra += f", category='{category}'"
-            _log_usage("search_notes", query=query, k=k, tags=tags, category=category,
-                       mode=mode, duration_ms=round((time.monotonic() - t0) * 1000, 1),
-                       results_n=0, top_relevance=None)
             return notice + f"No notes found matching: {label}{extra}"
 
         top_relevance = None
         if candidates[0][2] is not None:
             top_relevance = round((1.0 - candidates[0][2]) * 100, 1)
-        _log_usage("search_notes", query=query, k=k, tags=tags, category=category,
-                   mode=mode, duration_ms=round((time.monotonic() - t0) * 1000, 1),
-                   results_n=len(candidates), top_relevance=top_relevance)
+        usage.note(
+            results_n=len(candidates), top_relevance=top_relevance,
+            hits=[{"path": meta["path"], "cat": meta["category"],
+                   "rel": None if dist is None else round((1.0 - dist) * 100, 1),
+                   "chunk": meta.get("chunk_heading", "")}
+                  for _, meta, dist in candidates],
+        )
 
         parts = []
         for doc, meta, dist in candidates:
@@ -260,7 +214,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return notice + "\n\n---\n\n".join(parts)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
-    @_tracked("add_note", "path", "tags", "author")
     def add_note(path: str, tags: list[str], author: str, content: str) -> str:
         """Save a new note to the knowledge base (writes to write_dir only).
 
@@ -292,7 +245,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return f"Saved: {p.relative_to(cfg.index_dir)}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-    @_tracked("read_note", "path", "offset", "limit")
     def read_note(path: str, offset: int = 0, limit: int | None = None) -> str:
         """Return the content of a note, including frontmatter (whole note by default).
 
@@ -319,7 +271,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return f"[lines {start + 1}–{end} of {total}]\n" + "\n".join(lines[start:end])
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
-    @_tracked("edit_note", "path", "tags")
     def edit_note(path: str, content: str, tags: list[str] | None = None) -> str:
         """Replace the body of an existing note (write_dir only).
 
@@ -343,7 +294,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return f"Updated: {path}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
-    @_tracked("patch_note", "path", "replace_all")
     def patch_note(path: str, old: str, new: str, replace_all: bool = False) -> str:
         """Partially edit a note by replacing a substring (write_dir only).
 
@@ -370,7 +320,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return f"Patched {count if replace_all else 1} occurrence(s) in {path}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
-    @_tracked("delete_note", "path")
     def delete_note(path: str) -> str:
         """Delete a note from disk and remove it from the index (write_dir only).
 
@@ -388,7 +337,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return f"Deleted: {path}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
-    @_tracked("move_note", "path", "new_path")
     def move_note(path: str, new_path: str) -> str:
         """Move or rename a note within write_dir. Updates category: frontmatter automatically.
 
@@ -463,7 +411,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
             return frontmatter.load(str(_dev_scaffold(project) / f"{kind}.md")).content
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
-    @_tracked("dev_task", "project", "id", "state")
     def dev_task(
         project: str,
         id: str | None = None,
@@ -499,7 +446,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
             return f"Error: {e}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
-    @_tracked("dev_log", "project", "tasks")
     def dev_log(project: str, tasks: list[str], summary: str, implementation: str) -> str:
         """Append a row to projects/<project>/dev/PROGRESS.md under today's date.
 
@@ -523,7 +469,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
             return f"Error: {e}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
-    @_tracked("dev_decision", "project", "id", "status")
     def dev_decision(
         project: str,
         title: str | None = None,
@@ -559,7 +504,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
             return f"Error: {e}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
-    @_tracked("add_category", "category")
     def add_category(category: str, usage: str) -> str:
         """Create a new category directory with .mimir.yaml in write_dir.
 
@@ -584,7 +528,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return f"Created category: {category}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
-    @_tracked("edit_category", "category")
     def edit_category(category: str, usage: str) -> str:
         """Update the usage guidance of an existing category's .mimir.yaml.
 
@@ -616,7 +559,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return f"Updated category: {category}"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
-    @_tracked("move_category", "category", "new_category")
     def move_category(category: str, new_category: str) -> str:
         """Rename or move a category and update category: frontmatter in all notes inside.
 
@@ -661,7 +603,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return f"Moved category {category} → {new_category} ({updated} notes updated)"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
-    @_tracked("delete_category", "category", "force")
     def delete_category(category: str, force: bool = False) -> str:
         """Delete a category from write_dir.
 
@@ -690,7 +631,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return f"Deleted category {category} ({len(md_files)} notes removed)"
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-    @_tracked("list_tags")
     def list_tags() -> str:
         """List all tags in the knowledge base with note counts, sorted by frequency."""
         touch_fn()
@@ -711,7 +651,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return "\n".join(f"  {tag}: {n}" for tag, n in sorted(counts.items(), key=lambda x: -x[1]))
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
-    @_tracked("reindex")
     def reindex() -> str:
         """Re-index notes modified since last index.
 
@@ -726,7 +665,6 @@ def register_tools(mcp: FastMCP, cfg: Config, store: VectorStore, touch_fn) -> N
         return f"Updated {n} note(s). Total indexed: {store.count_files()} note(s), {store.count()} chunk(s)."
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-    @_tracked("get_schema")
     def get_schema() -> str:
         """Return knowledge base schema with categories and descriptions.
 

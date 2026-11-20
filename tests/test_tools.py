@@ -29,7 +29,7 @@ def t(tmp_path, monkeypatch):
     write_dir.mkdir(parents=True)
     cfg = Config(index_dir=index_dir, write_dir=write_dir, port=0, chroma_dir=tmp_path / "c", model="",
                  idle_timeout=0, sync_interval=0, log_level="INFO", log_file=tmp_path / "l",
-                 max_log_mb=1, max_log_files=1, usage_log_file=tmp_path / "u", auth_token=None,
+                 max_log_mb=1, max_log_files=1, usage_log_file=tmp_path / "u", usage_log_detail="summary", auth_token=None,
                  bind_host="127.0.0.1", upgrade_check=False, upgrade_check_interval=0)
     mcp = FakeMCP()
     tools.register_tools(mcp, cfg, store=None, touch_fn=lambda: None)

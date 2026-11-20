@@ -23,11 +23,19 @@ class Config:
     log_file: Path
     max_log_mb: int
     max_log_files: int
-    usage_log_file: Path   # structured JSONL log of MCP tool calls, for usage analysis
+    usage_log_file: Path   # structured JSONL log of MCP tool calls; may contain {host} / {month}
+    usage_log_detail: str  # "summary" | "full" (full args + responses to *.payloads.jsonl)
     auth_token: str | None  # Bearer token for auth; None = no auth (local only)
     bind_host: str          # "127.0.0.1" (default) or "0.0.0.0" (with proxy/Caddy)
     upgrade_check: bool     # compare the running version with GitHub
     upgrade_check_interval: int  # seconds; 0 = only at server start
+
+
+def _usage_detail(value: str) -> str:
+    value = value.strip().lower()
+    if value not in ("summary", "full"):
+        raise ValueError(f"MIMIR_USAGE_LOG_DETAIL must be 'summary' or 'full', not {value!r}")
+    return value
 
 
 def load() -> Config:
@@ -45,6 +53,7 @@ def load() -> Config:
         max_log_mb=int(os.environ["MIMIR_MAX_LOG_MB"]),
         max_log_files=int(os.environ["MIMIR_MAX_LOG_FILES"]),
         usage_log_file=Path(os.environ["MIMIR_USAGE_LOG_FILE"]).expanduser().resolve(),
+        usage_log_detail=_usage_detail(os.environ.get("MIMIR_USAGE_LOG_DETAIL", "summary")),
         auth_token=os.environ.get("MIMIR_AUTH_TOKEN") or None,
         bind_host=os.environ.get("MIMIR_BIND_HOST", "127.0.0.1"),
         upgrade_check=os.environ.get("MIMIR_UPGRADE_CHECK", "true").strip().lower() != "false",

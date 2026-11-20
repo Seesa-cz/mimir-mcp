@@ -7,18 +7,16 @@ import os
 import signal
 import threading
 import time
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from mcp.server.fastmcp import FastMCP
 
 from .config import load as load_config
 from .store import VectorStore
 from .indexer import sync, start_watcher, is_indexing
 from .tools import register_tools
-from . import version_check
+from . import usage, version_check
 
 
 def main() -> None:
@@ -42,19 +40,8 @@ def main() -> None:
     log.warning("Starting mimir server on port %d (pid %d)", cfg.port, os.getpid())
 
     # Usage log — one JSON line per MCP tool call, separate from server.log, for
-    # offline analysis of real usage patterns (see tools.py touch points).
-    cfg.usage_log_file.parent.mkdir(parents=True, exist_ok=True)
-    usage_logger = logging.getLogger("mimir.usage")
-    usage_logger.setLevel(logging.INFO)
-    usage_logger.propagate = False
-    usage_handler = RotatingFileHandler(
-        cfg.usage_log_file,
-        maxBytes=cfg.max_log_mb * 1024 * 1024,
-        backupCount=cfg.max_log_files,
-        encoding="utf-8",
-    )
-    usage_handler.setFormatter(logging.Formatter("%(message)s"))
-    usage_logger.addHandler(usage_handler)
+    # offline analysis of real usage patterns (written by usage.TrackedFastMCP).
+    usage.setup(str(cfg.usage_log_file), cfg.usage_log_detail, cfg.max_log_mb, cfg.max_log_files)
 
     # Validate required directories exist
     if not cfg.index_dir.exists():
@@ -84,7 +71,7 @@ def main() -> None:
     threading.Thread(target=_initial_sync, daemon=True).start()
     version_check.start_update_checks(cfg.upgrade_check, cfg.upgrade_check_interval)
 
-    mcp = FastMCP("mimir")
+    mcp = usage.TrackedFastMCP("mimir")
 
     _last_activity = [time.monotonic()]
 

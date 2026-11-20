@@ -150,7 +150,8 @@ Configuration is resolved in layers (later overrides earlier):
 | `max_log_mb` | no | `5` | Rotate log at N MB (0 = never) |
 | `max_log_files` | no | `5` | Number of rotated backups |
 | `fastembed_cache_path` | no | `~/.cache/fastembed` | ONNX model cache dir (persistent across reinstalls) |
-| `usage_log_file` | no | `<app_dir>/usage.jsonl` | JSONL log of MCP tool calls, for usage analysis |
+| `usage_log_file` | no | `<app_dir>/usage.jsonl` | JSONL log of MCP tool calls, for usage analysis. `{host}` = hostname, `{month}` = `YYYY-MM` (monthly files, no rotation or deletion); e.g. `~/Sync/mimir-usage/usage-{host}-{month}.jsonl` for several machines |
+| `usage_log_detail` | no | `summary` | `full` also writes full arguments and responses to `<usage_log_file stem>.payloads.jsonl`, linked by `req` |
 | `upgrade_check` | no | `true` | Compare the running version with GitHub (`false` = off) |
 | `upgrade_check_interval_minutes` | no | `360` | Update check interval (0 = only at server start) |
 | `auth_token` | no | `""` | Bearer token; empty = no auth (local only) |

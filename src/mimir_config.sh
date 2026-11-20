@@ -51,6 +51,7 @@ _load_yaml() {
             max_log_mb)            _set_var MIMIR_MAX_LOG_MB       "$val" "$src" ;;
             max_log_files)         _set_var MIMIR_MAX_LOG_FILES    "$val" "$src" ;;
             usage_log_file)        _set_var MIMIR_USAGE_LOG_FILE   "$val" "$src" ;;
+            usage_log_detail)      _set_var MIMIR_USAGE_LOG_DETAIL "$val" "$src" ;;
             auth_token)            _set_var MIMIR_AUTH_TOKEN       "$val" "$src" ;;
             bind_host)             _set_var MIMIR_BIND_HOST        "$val" "$src" ;;
             fastembed_cache_path)  _set_var MIMIR_FASTEMBED_CACHE  "$val" "$src" ;;
@@ -70,7 +71,7 @@ mimir_resolve_config() {
     local _v
     for _v in MIMIR_PORT MIMIR_INDEX_DIR MIMIR_WRITE_DIR MIMIR_CHROMA_DIR \
               MIMIR_MODEL MIMIR_IDLE_TIMEOUT MIMIR_SYNC_INTERVAL MIMIR_LOG_LEVEL \
-              MIMIR_LOG_FILE MIMIR_MAX_LOG_MB MIMIR_MAX_LOG_FILES MIMIR_USAGE_LOG_FILE \
+              MIMIR_LOG_FILE MIMIR_MAX_LOG_MB MIMIR_MAX_LOG_FILES MIMIR_USAGE_LOG_FILE MIMIR_USAGE_LOG_DETAIL \
               MIMIR_AUTH_TOKEN MIMIR_BIND_HOST MIMIR_PID_FILE MIMIR_FASTEMBED_CACHE \
               MIMIR_UPGRADE_CHECK MIMIR_UPGRADE_CHECK_INTERVAL; do
         [[ -n "${!_v+x}" ]] && _ENV_BEFORE[$_v]="${!_v}"
@@ -95,6 +96,7 @@ mimir_resolve_config() {
     [[ -z "${MIMIR_MAX_LOG_MB:-}"    ]] && _set_var MIMIR_MAX_LOG_MB     "5"                   "derived"
     [[ -z "${MIMIR_MAX_LOG_FILES:-}" ]] && _set_var MIMIR_MAX_LOG_FILES  "5"                   "derived"
     [[ -z "${MIMIR_USAGE_LOG_FILE:-}"  ]] && _set_var MIMIR_USAGE_LOG_FILE  "$APP_DIR/usage.jsonl"    "derived"
+    [[ -z "${MIMIR_USAGE_LOG_DETAIL:-}" ]] && _set_var MIMIR_USAGE_LOG_DETAIL "summary"                 "derived"
     [[ -z "${MIMIR_AUTH_TOKEN:-}"      ]] && _set_var MIMIR_AUTH_TOKEN      ""                        "derived"
     [[ -z "${MIMIR_BIND_HOST:-}"       ]] && _set_var MIMIR_BIND_HOST       "127.0.0.1"               "derived"
     [[ -z "${MIMIR_FASTEMBED_CACHE:-}" ]] && _set_var MIMIR_FASTEMBED_CACHE "$HOME/.cache/fastembed"  "derived"
